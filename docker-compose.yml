@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  upstream:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "-e", "require('http').createServer((req,res)=>{res.end(JSON.stringify({ok:true}))}).listen(3001)"]
+    ports:
+      - "3001:3001"

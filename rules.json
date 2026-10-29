@@ -1,0 +1,14 @@
+{
+  "api": {
+    "algorithm": "slidingCounter",
+    "limit": 100,
+    "windowMs": 60000
+  },
+  "login": {
+    "algorithm": "tokenBucket",
+    "limit": 10,
+    "windowMs": 60000,
+    "burst": 5,
+    "refillRatePerSecond": 0.1667
+  }
+}
