@@ -6,6 +6,10 @@ export interface RateLimitResult {
   retryAfterMs: number;
 }
 
+export interface AsyncRateLimiter<R> {
+  check(key: string, rule: R): Promise<RateLimitResult>;
+}
+
 export interface WindowRule {
   limit: number;
   windowMs: number;
