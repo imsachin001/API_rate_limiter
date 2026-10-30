@@ -28,3 +28,9 @@ export interface RateLimiter<R> {
     now?: number
   ): RateLimitResult;
 }
+
+export type RateLimitRule =
+  | (WindowRule & { algorithm: "fixed-window" })
+  | (WindowRule & { algorithm: "sliding-log" })
+  | (WindowRule & { algorithm: "sliding-counter" })
+  | (TokenBucketRule & { algorithm: "token-bucket" });
