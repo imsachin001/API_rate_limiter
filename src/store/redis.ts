@@ -4,10 +4,32 @@ const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
 
 export const redis = new Redis(redisUrl, {
   lazyConnect: true,
-  maxRetriesPerRequest: 2,
+
+  // Fail commands instead of queuing an unlimited backlog
+  // while Redis is unavailable.
+  enableOfflineQueue: false,
+
+  // Limit command retries during connection failures.
+  maxRetriesPerRequest: 1,
+  connectTimeout: 1000,
+
   retryStrategy(times) {
     return Math.min(times * 200, 2000);
   },
+});
+
+redis.on("ready", () => {
+  console.log("[Redis] Ready to accept commands");
+});
+
+redis.on("reconnecting", () => {
+  console.warn("[Redis] Reconnecting...");
+});
+
+redis.on("close", () => {
+  if (redis.status !== "end") {
+    console.warn("[Redis] Connection closed");
+  }
 });
 
 redis.on("connect", () => {
