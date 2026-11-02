@@ -8,13 +8,15 @@ const envSchema = z.object({
     .url()
     .default("redis://localhost:6379"),
 
-  // Number of trusted proxy hops. Keep 0 unless configured
-  // behind a known reverse proxy.
   TRUST_PROXY_HOPS: z.coerce
     .number()
     .int()
     .min(0)
     .default(0),
+
+  REDIS_FAILURE_MODE: z
+    .enum(["fail-open", "fail-closed", "local-fallback"])
+    .default("fail-closed"),
 });
 
 const parsed = envSchema.safeParse(process.env);
