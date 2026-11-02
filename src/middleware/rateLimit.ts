@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { Request, RequestHandler } from "express";
+import { Request, RequestHandler, Response } from "express";
 
 import {
   RateLimitRule,
@@ -77,7 +77,7 @@ function getLimit(rule: RateLimitRule): number {
 }
 
 function setHeaders(
-  res: Parameters<RequestHandler>[1],
+  res: Response,
   result: RateLimitResult,
   rule: RateLimitRule
 ): void {
