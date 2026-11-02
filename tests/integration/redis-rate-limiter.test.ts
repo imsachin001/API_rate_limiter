@@ -6,6 +6,9 @@ import {
   RedisTokenBucketLimiter,
 } from "../../src/store/redisRateLimiters";
 
+import request from "supertest";
+import { app } from "../../src/app";
+
 describe("Redis rate limiters", () => {
   const fixed = new RedisFixedWindowLimiter();
   const slidingLog = new RedisSlidingLogLimiter();
@@ -22,6 +25,55 @@ describe("Redis rate limiters", () => {
 
   afterAll(async () => {
     await redis.quit();
+  });
+
+  test("Middleware adds rate-limit headers", async () => {
+    const response = await request(app).get("/api/public");
+    expect(response.status).toBe(200);
+    expect(response.headers["x-ratelimit-limit"]).toBe("5");
+    expect(response.headers["x-ratelimit-remaining"]).toBe("4");
+    expect(response.headers["x-ratelimit-reset"]).toBeDefined();
+  });
+
+  test("Middleware returns 429 after the configured limit", async () => {
+    const responses = [];
+
+    for (let i = 0; i < 6; i++) {
+      responses.push(
+        await request(app).get("/api/public")
+      );
+    }
+
+    expect(responses.slice(0, 5).every(
+      (response) => response.status === 200
+    )).toBe(true);
+
+    expect(responses[5].status).toBe(429);
+    expect(responses[5].body.error).toBe("Too many requests");
+    expect(responses[5].headers["retry-after"]).toBeDefined();
+  });
+
+  test("API keys receive independent rate-limit buckets", async () => {
+    const first = await request(app)
+      .get("/api/account")
+      .set("x-api-key", "demo-key-one");
+
+    const second = await request(app)
+      .get("/api/account")
+      .set("x-api-key", "demo-key-two");
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    expect(first.headers["x-ratelimit-remaining"]).toBe("9");
+    expect(second.headers["x-ratelimit-remaining"]).toBe("9");
+  });
+
+  test("Missing API key falls back to IP-based limiting", async () => {
+    const response = await request(app).get("/api/account");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["x-ratelimit-limit"]).toBe("10");
   });
 
   test("Fixed Window enforces the request limit", async () => {
