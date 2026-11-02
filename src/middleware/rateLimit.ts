@@ -1,19 +1,18 @@
 import { createHash } from "crypto";
-import { Request, RequestHandler, Response } from "express";
+import {
+  Request,
+  RequestHandler,
+  Response,
+} from "express";
+
+import { config } from "../config/env";
+import { RateLimitRule } from "../algorithms/types";
 
 import {
-  RateLimitRule,
-  RateLimitResult,
-  WindowRule,
-  TokenBucketRule,
-} from "../algorithms/types";
-
-import {
-  RedisFixedWindowLimiter,
-  RedisSlidingLogLimiter,
-  RedisSlidingCounterLimiter,
-  RedisTokenBucketLimiter,
-} from "../store/redisRateLimiters";
+  RateLimiterService,
+  RateLimiterUnavailableError,
+  RateLimitServiceResult,
+} from "../store/rateLimiterService";
 
 type IdentityType = "ip" | "api-key";
 
@@ -23,10 +22,9 @@ interface RateLimitOptions {
   rule: RateLimitRule;
 }
 
-const fixedWindow = new RedisFixedWindowLimiter();
-const slidingLog = new RedisSlidingLogLimiter();
-const slidingCounter = new RedisSlidingCounterLimiter();
-const tokenBucket = new RedisTokenBucketLimiter();
+const defaultRateLimiterService = new RateLimiterService(
+  config.REDIS_FAILURE_MODE
+);
 
 function getClientIdentity(
   req: Request,
@@ -35,13 +33,13 @@ function getClientIdentity(
   if (identityType === "api-key") {
     const apiKey = req.get("x-api-key")?.trim();
 
-    // Unauthenticated requests are still rate-limited by IP.
     if (apiKey) {
       return `api-key:${apiKey}`;
     }
   }
 
   const ip = req.ip || req.socket.remoteAddress || "unknown";
+
   return `ip:${ip}`;
 }
 
@@ -49,25 +47,6 @@ function hashKey(value: string): string {
   return createHash("sha256")
     .update(value)
     .digest("hex");
-}
-
-async function checkLimit(
-  key: string,
-  rule: RateLimitRule
-): Promise<RateLimitResult> {
-  switch (rule.algorithm) {
-    case "fixed-window":
-      return fixedWindow.check(key, rule as WindowRule);
-
-    case "sliding-log":
-      return slidingLog.check(key, rule as WindowRule);
-
-    case "sliding-counter":
-      return slidingCounter.check(key, rule as WindowRule);
-
-    case "token-bucket":
-      return tokenBucket.check(key, rule as TokenBucketRule);
-  }
 }
 
 function getLimit(rule: RateLimitRule): number {
@@ -78,56 +57,73 @@ function getLimit(rule: RateLimitRule): number {
 
 function setHeaders(
   res: Response,
-  result: RateLimitResult,
+  result: RateLimitServiceResult,
   rule: RateLimitRule
 ): void {
+  if (result.source === "fail-open") {
+    // We cannot report an accurate remaining quota while Redis is down.
+    res.setHeader("X-RateLimit-Status", "bypassed");
+    res.setHeader("X-RateLimit-Degraded", "true");
+    return;
+  }
+
   res.setHeader("X-RateLimit-Limit", String(getLimit(rule)));
+
   res.setHeader(
     "X-RateLimit-Remaining",
     String(result.remaining)
   );
 
-  // This header is an epoch timestamp in seconds.
   res.setHeader(
     "X-RateLimit-Reset",
     String(Math.ceil((Date.now() + result.resetMs) / 1000))
   );
 
-  if (!result.allowed) {
-    const retryAfterSeconds = Math.max(
-      1,
-      Math.ceil(result.retryAfterMs / 1000)
-    );
+  res.setHeader(
+    "X-RateLimit-Status",
+    result.source === "local-fallback"
+      ? "local-fallback"
+      : "enforced"
+  );
 
-    res.setHeader("Retry-After", String(retryAfterSeconds));
+  if (result.source === "local-fallback") {
+    res.setHeader("X-RateLimit-Degraded", "true");
+  } else {
+    res.setHeader("X-RateLimit-Degraded", "false");
+  }
+
+  if (!result.allowed) {
+    res.setHeader(
+      "Retry-After",
+      String(Math.max(1, Math.ceil(result.retryAfterMs / 1000)))
+    );
   }
 }
 
 export function rateLimit(
-  options: RateLimitOptions
+  options: RateLimitOptions,
+  service: RateLimiterService = defaultRateLimiterService
 ): RequestHandler {
   const { name, identity, rule } = options;
 
   return (req, res, next) => {
-    const execute = async () => {
+    const execute = async (): Promise<void> => {
       const clientIdentity = getClientIdentity(req, identity);
 
-      // Hashing keeps raw API keys and IP identifiers out of Redis keys.
-      const redisKey = `rl:v1:${name}:${hashKey(clientIdentity)}`;
+      const redisKey =
+        `rl:v1:${name}:${hashKey(clientIdentity)}`;
 
-      const result = await checkLimit(redisKey, rule);
+      const result = await service.check(redisKey, rule);
 
       setHeaders(res, result, rule);
 
       if (!result.allowed) {
-        const retryAfterSeconds = Math.max(
-          1,
-          Math.ceil(result.retryAfterMs / 1000)
-        );
-
         res.status(429).json({
           error: "Too many requests",
-          retryAfterSeconds,
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil(result.retryAfterMs / 1000)
+          ),
         });
 
         return;
@@ -136,6 +132,21 @@ export function rateLimit(
       next();
     };
 
-    execute().catch(next);
+    execute().catch((error: unknown) => {
+      if (error instanceof RateLimiterUnavailableError) {
+        res.setHeader("Retry-After", "1");
+        res.setHeader("X-RateLimit-Status", "unavailable");
+
+        res.status(503).json({
+          error: "Rate limiter temporarily unavailable",
+          message:
+            "The request was rejected because rate limits cannot currently be enforced.",
+        });
+
+        return;
+      }
+
+      next(error);
+    });
   };
 }

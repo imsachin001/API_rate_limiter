@@ -5,18 +5,23 @@ import { config } from "./config/env";
 import { connectRedis } from "./store/redis";
 
 async function startServer(): Promise<void> {
-  try {
-    await connectRedis();
+  // Start the Redis connection attempt without blocking HTTP startup.
+  void connectRedis().catch((error: unknown) => {
+    console.error(
+      "[Redis] Initial connection failed:",
+      error instanceof Error ? error.message : error
+    );
 
-    app.listen(config.PORT, () => {
-      console.log(
-        `Rate limiter server running on port ${config.PORT}`
-      );
-    });
-  } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-  }
+    console.warn(
+      `[Redis] Failure mode: ${config.REDIS_FAILURE_MODE}`
+    );
+  });
+
+  app.listen(config.PORT, () => {
+    console.log(
+      `Rate limiter server running on port ${config.PORT}`
+    );
+  });
 }
 
 void startServer();
