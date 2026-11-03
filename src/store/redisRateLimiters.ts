@@ -12,7 +12,7 @@ import {
 
 const loadScript = (filename: string): string => {
   return readFileSync(
-    join(process.cwd(), "src", "lua", filename),
+    join(__dirname, "..", "lua", filename),
     "utf8"
   );
 };
